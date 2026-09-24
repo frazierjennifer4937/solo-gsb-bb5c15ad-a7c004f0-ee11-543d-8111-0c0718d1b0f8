@@ -15,6 +15,7 @@ const {
   createState,
   validateEdge,
   validateEdgeBatch,
+  previewMergeMembers,
   isReachableUp,
   MAX_MEMBERS,
 } = require('./familyGraph');
@@ -140,6 +141,52 @@ function createStore(filePath) {
     return { error: null };
   }
 
+  /**
+   * 合并成员预检：把 mergeId 在全部关系中的 ID 替换为 keepId 后去重、检测冲突。
+   * 纯只读，不写入任何数据。
+   */
+  function previewMerge(keepId, mergeId) {
+    return previewMergeMembers(state, keepId, mergeId);
+  }
+
+  /**
+   * 合并成员提交（乐观锁 + 服务端重算）。
+   * 先比对家谱版本，再按与预检完全相同的规则重新计算：
+   * 版本变化（409）或仍有冲突（400）时整单拒绝、不修改任何数据；
+   * 合法时保留保留成员的姓名，以合并后的边集整体替换关系，删除被合并成员，
+   * 一次落盘且版本只加一。
+   */
+  function commitMerge(keepId, mergeId, expectedVersion) {
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+      return { error: '缺少家谱版本号，请先预览后再提交', status: 400 };
+    }
+    if (expectedVersion !== version) {
+      return {
+        error: '家谱在预览后已被修改，请重新预览后再提交',
+        status: 409,
+        currentVersion: version,
+      };
+    }
+
+    const result = previewMergeMembers(state, keepId, mergeId);
+    if (result.error) {
+      // 结构非法（成员不存在 / 同一人）属于请求错误
+      if (result.valid === undefined) return { error: result.error, status: 400 };
+      // 合并冲突：整单拒绝、零写入
+      return { error: result.error, status: 400, result };
+    }
+
+    // 一次应用：重建父母邻接表 + 删除被合并成员（保留成员姓名不动）
+    state.members = state.members.filter((m) => m.id !== mergeId);
+    for (const childId of Object.keys(state.parentsOf)) delete state.parentsOf[childId];
+    for (const m of state.members) state.parentsOf[m.id] = [];
+    for (const e of result.edges) {
+      state.parentsOf[e.childId].push(e.parentId);
+    }
+    persist();
+    return { error: null };
+  }
+
   return {
     list,
     addMember,
@@ -149,6 +196,8 @@ function createStore(filePath) {
     deleteEdge,
     commitEdges,
     validateEdgeBatch: (edges) => validateEdgeBatch(state, edges),
+    previewMerge,
+    commitMerge,
     getState: () => state,
     getVersion: () => version,
   };

@@ -240,6 +240,124 @@ function validateEdgeBatch(state, rawEdges) {
   };
 }
 
+/**
+ * 合并重复成员预检（纯函数，不修改 state）。
+ *
+ * 把被合并成员 mergeId 在「全部父母 → 子女关系」中的 ID 替换为保留成员 keepId，
+ * 替换后完全相同的关系去重，再在合并结果上统一检查三类冲突：
+ *   - 自指：替换后某条关系的父母与子女变成同一人
+ *     （例如已有 A→B，把 B 并入 A 后会得到 A→A）；
+ *   - 超过两位父母：去重后任一子女仍有超过 MAX_PARENTS_PER_CHILD 位父母；
+ *   - 祖先环路：合并图中某条边的父母沿父母链向上可以到达其子女。
+ * 冲突可同时命中多项，全部列入 conflicts；只要存在冲突 valid 即为 false。
+ *
+ * 返回：
+ *   结构非法（成员不存在 / 两人相同）：{ error: string }
+ *   正常：{
+ *     valid, error, keepId, mergeId,
+ *     originalEdgeCount,      // 合并前关系总数
+ *     affectedEdgeCount,      // 其中端点涉及被合并成员的关系数
+ *     removedDuplicateCount,  // ID 替换后去重掉的重复关系数
+ *     edges: [{ parentId, childId, replaced }],  // 合并去重后的关系；
+ *                                                // replaced 表示是否源自涉及被合并成员的关系
+ *     conflicts: [{ type, ... }],
+ *   }
+ */
+function previewMergeMembers(state, keepId, mergeId) {
+  if (!hasMember(state, keepId)) return { error: '保留成员不存在' };
+  if (!hasMember(state, mergeId)) return { error: '被合并成员不存在' };
+  if (keepId === mergeId) return { error: '保留成员与被合并成员不能是同一人' };
+
+  const original = edgesFromState(state);
+  const substitute = (id) => (id === mergeId ? keepId : id);
+
+  const conflicts = [];
+  // 自指关系不参与去重与后续图校验，单独作为冲突报告
+  const mergedByKey = new Map(); // child|parent -> { parentId, childId, replaced }
+  let affectedEdgeCount = 0;
+  let removedDuplicateCount = 0;
+
+  for (const e of original) {
+    const touched = e.parentId === mergeId || e.childId === mergeId;
+    if (touched) affectedEdgeCount += 1;
+    const nextParent = substitute(e.parentId);
+    const nextChild = substitute(e.childId);
+
+    if (nextParent === nextChild) {
+      conflicts.push({
+        type: 'self',
+        parentId: nextParent,
+        childId: nextChild,
+        originParentId: e.parentId,
+        originChildId: e.childId,
+      });
+      continue;
+    }
+
+    const key = `${nextChild}|${nextParent}`;
+    const existing = mergedByKey.get(key);
+    if (existing) {
+      removedDuplicateCount += 1;
+      if (touched) existing.replaced = true;
+    } else {
+      mergedByKey.set(key, { parentId: nextParent, childId: nextChild, replaced: touched });
+    }
+  }
+
+  const edges = [...mergedByKey.values()].sort((a, b) => {
+    if (a.childId !== b.childId) return a.childId.localeCompare(b.childId);
+    return a.parentId.localeCompare(b.parentId);
+  });
+
+  // 合并后的父母邻接表
+  const parentsByChild = new Map();
+  for (const e of edges) {
+    if (!parentsByChild.has(e.childId)) parentsByChild.set(e.childId, []);
+    parentsByChild.get(e.childId).push(e.parentId);
+  }
+
+  // 冲突一：子女超过两位父母
+  for (const childId of [...parentsByChild.keys()].sort()) {
+    const parentIds = parentsByChild.get(childId);
+    if (parentIds.length > MAX_PARENTS_PER_CHILD) {
+      conflicts.push({
+        type: 'too-many-parents',
+        childId,
+        parentIds: [...parentIds],
+        count: parentIds.length,
+      });
+    }
+  }
+
+  // 冲突二：祖先环路（自指边已剔除，from===to 的平凡情况不会出现）
+  const mergedState = {
+    ...state,
+    parentsOf: Object.fromEntries(
+      [...parentsByChild.entries()].map(([childId, parentIds]) => [childId, [...parentIds]]),
+    ),
+  };
+  for (const e of edges) {
+    if (isReachableUp(mergedState, e.parentId, e.childId)) {
+      conflicts.push({ type: 'cycle', parentId: e.parentId, childId: e.childId });
+    }
+  }
+
+  const valid = conflicts.length === 0;
+  return {
+    valid,
+    error: valid
+      ? null
+      : `合并预览存在 ${conflicts.length} 项冲突，已禁止提交`,
+    keepId,
+    mergeId,
+    originalEdgeCount: original.length,
+    affectedEdgeCount,
+    removedDuplicateCount,
+    edges,
+    conflicts,
+  };
+}
+
 /** 从状态导出边表（与 store 内的 edgesList 保持一致的最小实现） */
 function edgesFromState(state) {
   const edges = [];
@@ -359,6 +477,7 @@ module.exports = {
   isReachableUp,
   validateEdge,
   validateEdgeBatch,
+  previewMergeMembers,
   allShortestPathsUp,
   findCommonAncestors,
 };

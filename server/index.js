@@ -138,6 +138,109 @@ app.post('/api/edges/batch', (req, res) => {
   res.status(201).json(store.list());
 });
 
+/** 为合并预览的结果补上成员姓名与可读冲突信息（不写入数据） */
+function decorateMergeResult(result) {
+  const byId = new Map(store.list().members.map((m) => [m.id, m.name]));
+  const nameOf = (id) => byId.get(id) || '（已删除）';
+
+  const conflicts = result.conflicts.map((c) => {
+    if (c.type === 'self') {
+      return {
+        type: c.type,
+        memberId: c.parentId,
+        memberName: nameOf(c.parentId),
+        message:
+          `拒绝自指关系：合并后「${nameOf(c.originParentId)}」与「${nameOf(c.originChildId)}」` +
+          `变成同一人「${nameOf(c.parentId)}」，将产生其成为自己父母的关系`,
+      };
+    }
+    if (c.type === 'too-many-parents') {
+      return {
+        type: c.type,
+        childId: c.childId,
+        childName: nameOf(c.childId),
+        count: c.count,
+        message:
+          `每名子女至多 2 位父母：合并后「${nameOf(c.childId)}」将有 ${c.count} 位父母` +
+          `（${c.parentIds.map((id) => `「${nameOf(id)}」`).join('、')}）`,
+      };
+    }
+    // cycle
+    return {
+      type: c.type,
+      parentId: c.parentId,
+      parentName: nameOf(c.parentId),
+      childId: c.childId,
+      childName: nameOf(c.childId),
+      message:
+        `拒绝祖先环路：合并后「${nameOf(c.parentId)}」将成为「${nameOf(c.childId)}」的后代，` +
+        `形成循环祖先关系`,
+    };
+  });
+
+  return {
+    version: store.getVersion(),
+    valid: result.valid,
+    error: result.error,
+    keepId: result.keepId,
+    keepName: nameOf(result.keepId),
+    mergeId: result.mergeId,
+    mergeName: nameOf(result.mergeId),
+    originalEdgeCount: result.originalEdgeCount,
+    affectedEdgeCount: result.affectedEdgeCount,
+    removedDuplicateCount: result.removedDuplicateCount,
+    edges: result.edges.map((e) => ({
+      parentId: e.parentId,
+      childId: e.childId,
+      parentName: nameOf(e.parentId),
+      childName: nameOf(e.childId),
+      replaced: e.replaced,
+    })),
+    conflicts,
+  };
+}
+
+/**
+ * 合并重复成员预检：选择保留成员与被合并成员。
+ * 将被合并成员在全部父母→子女关系中的 ID 替换为保留成员后去重，
+ * 返回合并后的关系、去重数量与全部冲突（自指 / 超过两位父母 / 祖先环路）。
+ * 预览不修改家谱，仅返回当前家谱版本。
+ * 请求体：{ keepId, mergeId }
+ */
+app.post('/api/members/merge/preview', (req, res) => {
+  const keepId = requireId(req.body, 'keepId');
+  const mergeId = requireId(req.body, 'mergeId');
+  if (!keepId || !mergeId) return sendError(res, 400, '请选择保留成员与被合并成员');
+
+  const result = store.previewMerge(keepId, mergeId);
+  if (result.error && result.valid === undefined) {
+    return sendError(res, 400, result.error);
+  }
+  res.json(decorateMergeResult(result));
+});
+
+/**
+ * 合并重复成员提交：必须携带预览返回的家谱版本 version。
+ * 服务端重新比对版本并按同一规则重算：版本变化（409）或仍有冲突（400）
+ * 都整单拒绝、不修改任何数据；合法时保留保留成员姓名、去重关系、删除被合并成员，
+ * 一次落盘且版本加一。
+ * 请求体：{ version: number, keepId, mergeId }
+ */
+app.post('/api/members/merge', (req, res) => {
+  const keepId = requireId(req.body, 'keepId');
+  const mergeId = requireId(req.body, 'mergeId');
+  if (!keepId || !mergeId) return sendError(res, 400, '请选择保留成员与被合并成员');
+
+  const result = store.commitMerge(keepId, mergeId, req.body && req.body.version);
+  if (result.error) {
+    const payload = { error: result.error };
+    if (result.currentVersion !== undefined) payload.currentVersion = result.currentVersion;
+    if (result.result) payload.preview = decorateMergeResult(result.result);
+    return sendError(res, result.status || 400, payload);
+  }
+  res.status(201).json(store.list());
+});
+
 /**
  * 查询两人共同祖先：
  * 沿父母链 BFS，找出总代数最少的全部共同祖先，

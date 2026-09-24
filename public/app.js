@@ -23,9 +23,17 @@ const selection = {
   edgeChild: '',
   queryA: '',
   queryB: '',
+  mergeKeep: '',
+  mergeRemove: '',
 };
 
 let queryStale = false; // 关系被修改后，查询结果标记为过期
+
+// 最近一次合并预览：{ version, keepId, mergeId, valid, ...服务端返回 }
+// 仅当 version 与当前家谱版本一致且两人选择未改变时有效
+let mergePreview = null;
+let mergeStale = false;
+let mergeStaleReason = '';
 
 const $ = (id) => document.getElementById(id);
 
@@ -81,6 +89,7 @@ async function refresh() {
   state.edges = data.edges;
   reconcileSelection();
   if (versionChanged && preview && !previewStale) invalidatePreview('家谱已变化，请重新预检');
+  if (versionChanged && mergePreview && !mergeStale) invalidateMergePreview('家谱已刷新，请重新预览合并');
   render();
 }
 
@@ -92,6 +101,7 @@ function applyStateAndRender(data) {
   state.edges = data.edges;
   reconcileSelection();
   if (versionChanged && preview && !previewStale) invalidatePreview('家谱已变化，请重新预检');
+  if (versionChanged && mergePreview && !mergeStale) invalidateMergePreview('家谱已变化，请重新预览合并');
   render();
 }
 
@@ -121,6 +131,7 @@ function render() {
   renderEdges();
   renderSelects();
   renderDrafts();
+  renderMerge();
   renderStaleBanner();
 }
 
@@ -242,6 +253,8 @@ function renderSelects() {
   fillSelect($('edge-child'), selection.edgeChild, '选择子女');
   fillSelect($('query-a'), selection.queryA, '选择成员甲');
   fillSelect($('query-b'), selection.queryB, '选择成员乙');
+  fillSelect($('merge-keep'), selection.mergeKeep, '选择保留成员');
+  fillSelect($('merge-remove'), selection.mergeRemove, '选择被合并成员');
 }
 
 function fillSelect(select, selectedId, placeholder) {
@@ -320,12 +333,28 @@ function syncSelectionFromForm() {
   selection.edgeChild = $('edge-child').value;
   selection.queryA = $('query-a').value;
   selection.queryB = $('query-b').value;
+  selection.mergeKeep = $('merge-keep').value;
+  selection.mergeRemove = $('merge-remove').value;
 }
 
 $('edge-parent').addEventListener('change', syncSelectionFromForm);
 $('edge-child').addEventListener('change', syncSelectionFromForm);
 $('query-a').addEventListener('change', syncSelectionFromForm);
 $('query-b').addEventListener('change', syncSelectionFromForm);
+
+// 合并的两个成员一旦改变，旧预览立即失效
+$('merge-keep').addEventListener('change', () => {
+  syncSelectionFromForm();
+  invalidateMergePreview('保留成员已改变，请重新预览合并');
+});
+$('merge-remove').addEventListener('change', () => {
+  syncSelectionFromForm();
+  invalidateMergePreview('被合并成员已改变，请重新预览合并');
+});
+$('merge-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  previewMerge();
+});
 
 $('edge-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -561,6 +590,194 @@ $('draft-add').addEventListener('click', addDraftFromForm);
 $('batch-preview').addEventListener('click', previewBatch);
 $('batch-submit').addEventListener('click', submitBatch);
 $('batch-clear').addEventListener('click', clearDrafts);
+
+/* ---------------- 合并重复成员 ---------------- */
+
+function invalidateMergePreview(reason) {
+  mergePreview = null;
+  mergeStale = true;
+  mergeStaleReason = reason;
+  renderMerge();
+}
+
+/** 预览是否对应当前两位选择且版本未变 */
+function mergePreviewLive() {
+  if (!mergePreview || mergeStale) return false;
+  if (mergePreview.version !== state.version) return false;
+  if (mergePreview.keepId !== selection.mergeKeep) return false;
+  if (mergePreview.mergeId !== selection.mergeRemove) return false;
+  return true;
+}
+
+/** 预览合并：替换 ID、去重、列出冲突；预览不修改家谱 */
+async function previewMerge() {
+  syncSelectionFromForm();
+  const keepId = selection.mergeKeep;
+  const mergeId = selection.mergeRemove;
+  if (!keepId || !mergeId) { toast('请选择保留成员与被合并成员', true); return; }
+  if (keepId === mergeId) { toast('保留成员与被合并成员不能是同一人', true); return; }
+
+  const status = $('merge-status');
+  status.hidden = false;
+  status.className = 'batch-status info';
+  status.textContent = '预览中…（不会修改家谱）';
+  try {
+    const data = await api('/api/members/merge/preview', {
+      method: 'POST',
+      body: JSON.stringify({ keepId, mergeId }),
+    });
+    // 请求往返期间选择可能已被改动：结果只对当时的两人快照有效
+    if (keepId !== selection.mergeKeep || mergeId !== selection.mergeRemove) {
+      invalidateMergePreview('选择在预览期间已变化，请重新预览合并');
+      return;
+    }
+    mergePreview = data;
+    mergeStale = false;
+    mergeStaleReason = '';
+    renderMerge();
+  } catch (err) {
+    toast(err.message, true);
+    renderMerge();
+  }
+}
+
+/** 提交合并：携带预览版本；版本变化或仍有冲突时服务端整单拒绝、不改数据 */
+async function submitMerge() {
+  if (!mergePreviewLive() || !mergePreview.valid) {
+    toast('请先预览且不存在冲突后再提交合并', true);
+    return;
+  }
+  const btn = $('merge-submit');
+  btn.disabled = true;
+  const { keepId, mergeId, keepName, mergeName } = mergePreview;
+  try {
+    const data = await api('/api/members/merge', {
+      method: 'POST',
+      body: JSON.stringify({ version: mergePreview.version, keepId, mergeId }),
+    });
+    mergePreview = null;
+    mergeStale = false;
+    mergeStaleReason = '';
+    selection.mergeKeep = '';
+    selection.mergeRemove = '';
+    applyStateAndRender(data);
+    markStale();
+    toast(`已将「${mergeName}」并入「${keepName}」，保留成员「${keepName}」`);
+  } catch (err) {
+    if (/重新预览/.test(err.message)) {
+      invalidateMergePreview('家谱在预览后已被修改，请重新预览后再提交');
+      refresh().catch(() => {});
+    }
+    toast(err.message, true);
+    renderMerge();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('merge-preview').addEventListener('click', previewMerge);
+$('merge-submit').addEventListener('click', submitMerge);
+
+function renderMerge() {
+  const empty = $('merge-empty');
+  const status = $('merge-status');
+  const result = $('merge-result');
+  const previewBtn = $('merge-preview');
+  const submitBtn = $('merge-submit');
+  const form = $('merge-form');
+
+  if (state.members.length < 2) {
+    empty.hidden = false;
+    form.hidden = true;
+    status.hidden = true;
+    result.hidden = true;
+    previewBtn.disabled = true;
+    submitBtn.disabled = true;
+    return;
+  }
+  empty.hidden = true;
+  form.hidden = false;
+  previewBtn.disabled = false;
+
+  // 同一人时禁止预览/提交
+  const sameChosen = !!selection.mergeKeep && selection.mergeKeep === selection.mergeRemove;
+  const live = mergePreviewLive();
+
+  if (!live) {
+    result.hidden = true;
+    status.hidden = false;
+    if (sameChosen) {
+      status.className = 'batch-status error';
+      status.textContent = '保留成员与被合并成员不能是同一人。';
+    } else {
+      status.className = 'batch-status warn';
+      status.textContent = mergeStaleReason || '尚未预览，或预览结果已失效：请点击「预览合并」。';
+    }
+    submitBtn.disabled = true;
+    return;
+  }
+
+  status.hidden = false;
+  result.hidden = false;
+  renderMergeResult(result, mergePreview);
+
+  if (mergePreview.valid) {
+    status.className = 'batch-status ok';
+    status.textContent =
+      `预览通过：合并后保留「${mergePreview.keepName}」、删除「${mergePreview.mergeName}」，` +
+      `共 ${mergePreview.edges.length} 条关系（${mergePreview.affectedEdgeCount} 条涉及被合并成员，` +
+      `去重移除 ${mergePreview.removedDuplicateCount} 条重复关系）。` +
+      `提交基于家谱版本 ${mergePreview.version}，只落盘一次并使版本加一；期间家谱被修改会被拒绝。`;
+    submitBtn.disabled = false;
+  } else {
+    status.className = 'batch-status error';
+    status.textContent =
+      `预览发现 ${mergePreview.conflicts.length} 项冲突（见下），已禁止提交；` +
+      `请调整保留/被合并成员或先修正家谱关系后重新预览。`;
+    submitBtn.disabled = true;
+  }
+}
+
+function renderMergeResult(box, data) {
+  box.replaceChildren();
+
+  // 冲突清单
+  if (data.conflicts.length > 0) {
+    const conf = el('div', { class: 'merge-conflicts' });
+    conf.appendChild(el('h4', { text: `冲突（${data.conflicts.length} 项）` }));
+    const ul = el('ul');
+    for (const c of data.conflicts) {
+      ul.appendChild(el('li', { text: c.message }));
+    }
+    conf.appendChild(ul);
+    box.appendChild(conf);
+  }
+
+  // 合并后的关系
+  const edgeBox = el('div');
+  edgeBox.appendChild(el('h4', {
+    text: `合并后的关系（${data.edges.length} 条；去重移除 ${data.removedDuplicateCount} 条）`,
+  }));
+  if (data.edges.length === 0) {
+    edgeBox.appendChild(el('p', { class: 'empty-hint', text: '合并后没有任何父母→子女关系。' }));
+  } else {
+    const list = el('ul', { class: 'edge-list merge-edge-list' });
+    for (const e of data.edges) {
+      const li = el('li');
+      li.appendChild(el('span', { class: 'edge-text' }, [
+        el('span', { class: 'p-name', text: e.parentName }),
+        document.createTextNode(' → '),
+        el('span', { class: 'c-name', text: e.childName }),
+      ]));
+      if (e.replaced) {
+        li.appendChild(el('span', { class: 'merge-tag', text: 'ID 已替换' }));
+      }
+      list.appendChild(li);
+    }
+    edgeBox.appendChild(list);
+  }
+  box.appendChild(edgeBox);
+}
 
 /* ---------------- 共同祖先查询结果渲染 ---------------- */
 

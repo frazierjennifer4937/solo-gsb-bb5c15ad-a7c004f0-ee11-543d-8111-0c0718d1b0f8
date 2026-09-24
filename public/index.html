@@ -24,6 +24,34 @@
         <button type="submit">添加</button>
       </form>
       <ul id="member-list" class="member-list" aria-live="polite"></ul>
+
+      <!-- 合并重复成员 -->
+      <div id="merge-panel" class="batch-panel">
+        <div class="batch-head">
+          <h3>合并重复成员</h3>
+          <div class="batch-actions">
+            <button type="button" id="merge-preview" class="primary">预览合并</button>
+            <button type="button" id="merge-submit" disabled>确认合并</button>
+          </div>
+        </div>
+        <form id="merge-form" class="merge-form">
+          <label>
+            保留成员（合并后保留其姓名）
+            <select id="merge-keep"></select>
+          </label>
+          <label>
+            被合并成员（合并后删除）
+            <select id="merge-remove"></select>
+          </label>
+        </form>
+        <p id="merge-status" class="batch-status" hidden></p>
+        <div id="merge-result" class="merge-result" hidden></div>
+        <p class="empty-hint" id="merge-empty">
+          成员不足两人时无法合并。选择「保留成员」与「被合并成员」后点击「预览合并」：
+          被合并成员在全部关系中的 ID 将被替换为保留成员并自动去重；
+          若产生自指、某子女超过两位父母或祖先环路，会逐项列出冲突并禁止提交。预览不会修改家谱。
+        </p>
+      </div>
     </section>
 
     <!-- 关系管理 -->

@@ -200,3 +200,165 @@ test('批量提交：缺少版本号被拒绝', () => {
   assert.match(result.error, /版本号/);
   assert.equal(store.list().edges.length, 0);
 });
+
+/* ---------------- 合并重复成员 ---------------- */
+
+test('合并提交：成功时保留保留成员姓名、去重关系、删除被合并成员，版本 +1、一次落盘', () => {
+  const file = tmpFile();
+  const store = createStore(file);
+  const a = store.addMember('张三').member;
+  const b = store.addMember('张叁').member;
+  const c = store.addMember('张小').member;
+  store.addEdge(a.id, c.id);
+  store.addEdge(b.id, c.id); // 与上一条在合并后重复
+  const baseVersion = store.getVersion();
+
+  const preview = store.previewMerge(a.id, b.id);
+  assert.equal(preview.valid, true);
+  assert.equal(preview.removedDuplicateCount, 1);
+  assert.equal(preview.version, undefined); // 纯预览不含版本号（由路由补充）
+
+  const result = store.commitMerge(a.id, b.id, baseVersion);
+  assert.equal(result.error, null);
+  const data = store.list();
+  assert.equal(data.members.length, 2);
+  const survivor = data.members.find((m) => m.id === a.id);
+  assert.equal(survivor.name, '张三'); // 保留原姓名
+  assert.ok(!data.members.some((m) => m.id === b.id)); // 被合并成员已删除
+  assert.deepEqual(data.edges, [{ parentId: a.id, childId: c.id }]);
+  assert.equal(store.getVersion(), baseVersion + 1); // 版本只加一
+
+  // 只落盘一次：重启后状态一致且版本延续
+  const reloaded = createStore(file).list();
+  assert.equal(reloaded.members.length, 2);
+  assert.equal(reloaded.edges.length, 1);
+  assert.equal(reloaded.version, baseVersion + 1);
+});
+
+test('合并提交：被合并成员作为父母与子女时 ID 全部被替换', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const c = store.addMember('C').member;
+  const d = store.addMember('D').member;
+  store.addEdge(b.id, c.id);
+  store.addEdge(d.id, b.id);
+  const v = store.getVersion();
+
+  assert.equal(store.commitMerge(a.id, b.id, v).error, null);
+  const ids = Object.fromEntries(store.list().members.map((m) => [m.name, m.id]));
+  assert.deepEqual(
+    store.list().edges.map((e) => [e.parentId, e.childId]).sort(),
+    [[ids.A, ids.C], [ids.D, ids.A]].sort(),
+  );
+});
+
+test('合并提交：冲突时整单拒绝、不改任何数据、版本不变', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  store.addEdge(a.id, b.id); // 合并 B 入 A 会产生自指
+  const v = store.getVersion();
+
+  const result = store.commitMerge(a.id, b.id, v);
+  assert.equal(result.status, 400);
+  assert.ok(result.result);
+  assert.equal(result.result.valid, false);
+  assert.ok(result.result.conflicts.some((c) => c.type === 'self'));
+  // 数据完全未动
+  assert.equal(store.list().members.length, 2);
+  assert.equal(store.list().edges.length, 1);
+  assert.equal(store.getVersion(), v);
+});
+
+test('合并提交：超过两位父母冲突时零写入（直接构造绕过 API 的脏数据）', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const d = store.addMember('D').member;
+  const e = store.addMember('E').member;
+  const child = store.addMember('C').member;
+  store.addEdge(b.id, child.id);
+  store.addEdge(d.id, child.id);
+  // 绕过 API 直接制造第三位父母
+  store.getState().parentsOf[child.id].push(e.id);
+  const v = store.getVersion();
+
+  const result = store.commitMerge(a.id, b.id, v);
+  assert.equal(result.status, 400);
+  assert.ok(result.result.conflicts.some((c) => c.type === 'too-many-parents'));
+  assert.equal(store.getVersion(), v);
+});
+
+test('合并提交：祖先环路冲突时零写入', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const c = store.addMember('C').member;
+  store.addEdge(a.id, b.id);
+  store.addEdge(b.id, c.id);
+  const v = store.getVersion();
+
+  // 把 A 并入 C：C->B 与 B->C 成环
+  const result = store.commitMerge(c.id, a.id, v);
+  assert.equal(result.status, 400);
+  assert.ok(result.result.conflicts.some((x) => x.type === 'cycle'));
+  assert.equal(store.list().edges.length, 2);
+  assert.equal(store.getVersion(), v);
+});
+
+test('合并乐观锁：预览后家谱变化，携带旧版本提交被 409 拒绝且零写入', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const c = store.addMember('C').member;
+  store.addEdge(b.id, c.id);
+  const previewVersion = store.getVersion();
+
+  // 预览之后其他操作改动了家谱
+  const d = store.addMember('D').member;
+  assert.notEqual(store.getVersion(), previewVersion);
+
+  const result = store.commitMerge(a.id, b.id, previewVersion);
+  assert.equal(result.status, 409);
+  assert.match(result.error, /重新预览/);
+  assert.equal(result.currentVersion, store.getVersion());
+  // 未合并：被合并成员仍在，其关系未被替换
+  assert.ok(store.list().members.some((m) => m.id === b.id));
+  assert.ok(store.list().edges.some((e) => e.parentId === b.id));
+  assert.ok(store.list().members.some((m) => m.id === d.id));
+});
+
+test('合并提交：缺少版本号 / 成员不存在 / 同一人被拒绝', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const v = store.getVersion();
+
+  const noVersion = store.commitMerge(a.id, b.id, undefined);
+  assert.equal(noVersion.status, 400);
+  assert.match(noVersion.error, /版本号/);
+
+  const missing = store.commitMerge(a.id, 'no-such-id', v);
+  assert.equal(missing.status, 400);
+  assert.match(missing.error, /被合并成员不存在/);
+
+  const same = store.commitMerge(a.id, a.id, v);
+  assert.equal(same.status, 400);
+  assert.match(same.error, /同一人/);
+
+  assert.equal(store.getVersion(), v);
+});
+
+test('合并预览：不修改 store 数据也不推进版本', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  store.addEdge(a.id, b.id);
+  const v = store.getVersion();
+  const r = store.previewMerge(a.id, b.id);
+  assert.equal(r.valid, false);
+  assert.equal(store.getVersion(), v);
+  assert.equal(store.list().members.length, 2);
+  assert.equal(store.list().edges.length, 1);
+});

@@ -396,3 +396,63 @@ button.danger-link {
 .batch-status.warn { color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; }
 .batch-status.error { color: #991b1b; background: var(--warn-bg); border: 1px solid var(--warn-border); }
 .batch-status.info { color: var(--muted); background: var(--code-bg); border: 1px solid var(--border); }
+
+/* 合并重复成员 */
+.merge-form {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.merge-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  flex: 1 1 200px;
+}
+
+.merge-result {
+  margin-top: 10px;
+}
+
+.merge-result h4 {
+  margin: 10px 0 6px;
+  font-size: 0.9rem;
+}
+
+.merge-edge-list {
+  max-height: 240px;
+}
+
+.merge-tag {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.merge-conflicts {
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.merge-conflicts h4 {
+  margin: 0 0 4px;
+  color: #991b1b;
+}
+
+.merge-conflicts ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #991b1b;
+  font-size: 0.88rem;
+}
+
+.merge-conflicts li { margin-bottom: 2px; }
