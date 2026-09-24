@@ -138,6 +138,71 @@ app.post('/api/edges/batch', (req, res) => {
   res.status(201).json(store.list());
 });
 
+/** 为合并方案补上成员姓名（成员可能已在预览前被删除） */
+function decorateMergePlan(plan) {
+  const byId = new Map(store.list().members.map((m) => [m.id, m.name]));
+  return {
+    version: store.getVersion(),
+    error: plan.error,
+    valid: plan.valid,
+    keepId: plan.keepId,
+    dropId: plan.dropId,
+    keepName: plan.keepId ? byId.get(plan.keepId) || '（已删除）' : '',
+    dropName: plan.dropId ? byId.get(plan.dropId) || '（已删除）' : '',
+    removedCount: plan.removedCount,
+    edgeCount: plan.edges.length,
+    edges: plan.edges.map((e) => ({
+      parentId: e.parentId,
+      childId: e.childId,
+      parentName: byId.get(e.parentId) || '（已删除）',
+      childName: byId.get(e.childId) || '（已删除）',
+    })),
+    conflicts: plan.conflicts,
+  };
+}
+
+/**
+ * 合并预览：把被合并成员在全部父母→子女关系中的 ID 替换为保留成员，
+ * 返回合并去重后的完整关系、去重数量与冲突列表（自指/父母超限/祖先环路）。
+ * 不写入任何数据。请求体：{ keepId, dropId }
+ */
+app.post('/api/members/merge/preview', (req, res) => {
+  const keepId = requireId(req.body, 'keepId');
+  const dropId = requireId(req.body, 'dropId');
+  if (!keepId || !dropId) return sendError(res, 400, '请选择保留成员与被合并成员');
+  const plan = store.previewMerge(keepId, dropId);
+  res.json(decorateMergePlan(plan));
+});
+
+/**
+ * 合并提交：必须携带预览返回的家谱版本 version。
+ * 服务端重新比对版本并按同一规则重算：版本变化（409）、成员不存在（404）
+ * 或仍有冲突（400）都整单拒绝、不改数据；成功时保留成员姓名、
+ * 去重关系并删除被合并成员，一次落盘、版本加一。
+ * 请求体：{ keepId, dropId, version }
+ */
+app.post('/api/members/merge', (req, res) => {
+  const keepId = requireId(req.body, 'keepId');
+  const dropId = requireId(req.body, 'dropId');
+  if (!keepId || !dropId) return sendError(res, 400, '请选择保留成员与被合并成员');
+  const result = store.mergeMembers(keepId, dropId, req.body && req.body.version);
+  if (result.error) {
+    const payload = { error: result.error };
+    if (result.currentVersion !== undefined) payload.currentVersion = result.currentVersion;
+    // 冲突明细一并返回，便于前端直接展示
+    if (result.plan) payload.plan = decorateMergePlan(result.plan);
+    return sendError(res, result.status || 400, payload);
+  }
+  const data = store.list();
+  data.merge = {
+    keepId,
+    dropId,
+    removedCount: result.plan.removedCount,
+    edgeCount: result.plan.edges.length,
+  };
+  res.status(201).json(data);
+});
+
 /**
  * 查询两人共同祖先：
  * 沿父母链 BFS，找出总代数最少的全部共同祖先，

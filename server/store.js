@@ -15,6 +15,7 @@ const {
   createState,
   validateEdge,
   validateEdgeBatch,
+  planMerge,
   isReachableUp,
   MAX_MEMBERS,
 } = require('./familyGraph');
@@ -140,6 +141,46 @@ function createStore(filePath) {
     return { error: null };
   }
 
+  /**
+   * 合并重复成员（整单原子提交）。
+   * 先比对家谱版本（乐观锁），再用与预览完全相同的 planMerge 规则重算：
+   * 版本已变化（409）、成员状态不符（404）或仍有冲突（400）时整单拒绝、不改数据。
+   * 成功时：保留成员姓名不变，全部关系按去重后的结果重写，
+   * 删除被合并成员，只落盘一次、版本只推进一次。
+   */
+  function mergeMembers(keepId, dropId, expectedVersion) {
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+      return { error: '缺少家谱版本号，请先预览后再提交', status: 400 };
+    }
+    if (expectedVersion !== version) {
+      return {
+        error: '家谱在预览后已被修改，请重新预览后再提交',
+        status: 409,
+        currentVersion: version,
+      };
+    }
+
+    const plan = planMerge(state, keepId, dropId);
+    if (plan.error) return { error: plan.error, status: 404, plan };
+    if (!plan.valid) {
+      return {
+        error: `合并存在 ${plan.conflicts.length} 项冲突，整单已拒绝、未改动任何数据`,
+        status: 400,
+        plan,
+      };
+    }
+
+    // 应用合并：关系整体替换为去重后的结果，并删除被合并成员
+    const remaining = state.members.filter((m) => m.id !== dropId);
+    const parentsOf = {};
+    for (const m of remaining) parentsOf[m.id] = [];
+    for (const e of plan.edges) parentsOf[e.childId].push(e.parentId);
+    state.members = remaining;
+    state.parentsOf = parentsOf;
+    persist();
+    return { error: null, plan };
+  }
+
   return {
     list,
     addMember,
@@ -148,6 +189,8 @@ function createStore(filePath) {
     addEdge,
     deleteEdge,
     commitEdges,
+    mergeMembers,
+    previewMerge: (keepId, dropId) => planMerge(state, keepId, dropId),
     validateEdgeBatch: (edges) => validateEdgeBatch(state, edges),
     getState: () => state,
     getVersion: () => version,

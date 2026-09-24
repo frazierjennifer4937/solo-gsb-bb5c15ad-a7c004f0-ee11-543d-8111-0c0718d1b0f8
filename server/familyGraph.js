@@ -250,6 +250,129 @@ function edgesFromState(state) {
 }
 
 /**
+ * 合并重复成员的方案计算（纯函数，不修改 state）。
+ *
+ * 规则：把全部父母→子女关系中的被合并成员 dropId 替换为保留成员 keepId，
+ * 替换后完全相同的边去重（removedCount 即被去掉的重复关系数）。
+ * 替换可能引入三类冲突，任一存在都禁止提交（valid = false）：
+ *   - self    自指：保留成员与被合并成员之间本就存在直接父母→子女关系，
+ *             替换后会出现「自己是自己的父母」；
+ *   - parents 父母上限：合并后某子女的父母超过两位
+ *             （正常数据下不会发生，作为防御性校验保留）；
+ *   - cycle   祖先环路：合并后的图上，某条边的父母沿父母链可回到其子女。
+ *
+ * 返回 {
+ *   error: string|null,   // 结构错误（成员不存在/同一人），此时不看其余字段
+ *   valid: boolean,       // conflicts 为空才为 true
+ *   keepId, dropId,
+ *   edges: [...],         // 合并并去重后的全部关系（不含自指边）
+ *   removedCount: number, // 替换后因重复被去掉的关系数
+ *   conflicts: [{ type: 'self'|'parents'|'cycle', message, ... }]
+ * }
+ */
+function planMerge(state, keepId, dropId) {
+  const base = {
+    error: null,
+    valid: false,
+    keepId: keepId || null,
+    dropId: dropId || null,
+    edges: [],
+    removedCount: 0,
+    conflicts: [],
+  };
+  if (!keepId || !hasMember(state, keepId)) return { ...base, error: '保留成员不存在' };
+  if (!dropId || !hasMember(state, dropId)) return { ...base, error: '被合并成员不存在' };
+  if (keepId === dropId) {
+    return { ...base, error: '保留成员与被合并成员不能是同一人' };
+  }
+
+  const nameOf = (id) => {
+    const m = getMember(state, id);
+    return m ? m.name : id;
+  };
+  const mapId = (id) => (id === dropId ? keepId : id);
+
+  // 第一步：替换 ID；自指边单独收集（冲突），其余按「子女|父母」去重
+  const selfEdges = [];
+  const seen = new Set();
+  const merged = [];
+  let replacedNonSelf = 0;
+  for (const e of edgesFromState(state)) {
+    const parentId = mapId(e.parentId);
+    const childId = mapId(e.childId);
+    if (parentId === childId) {
+      selfEdges.push({ parentId, childId });
+      continue;
+    }
+    replacedNonSelf += 1;
+    const key = `${childId}|${parentId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({ parentId, childId });
+  }
+  const removedCount = replacedNonSelf - merged.length;
+
+  const conflicts = [];
+  if (selfEdges.length > 0) {
+    conflicts.push({
+      type: 'self',
+      parentId: keepId,
+      childId: keepId,
+      message:
+        `自指冲突：「${nameOf(keepId)}」与「${nameOf(dropId)}」之间存在直接父母→子女关系，` +
+        `合并后「${nameOf(keepId)}」将成为自己的父母`,
+    });
+  }
+
+  // 第二步：父母上限（防御性——合法数据中每名子女至多两位父母，
+  // 替换只会减少不会增加，但数据文件可能被手工改坏，仍按同一规则检查）
+  const parentsByChild = new Map();
+  for (const e of merged) {
+    if (!parentsByChild.has(e.childId)) parentsByChild.set(e.childId, new Set());
+    parentsByChild.get(e.childId).add(e.parentId);
+  }
+  for (const [childId, parents] of [...parentsByChild.entries()].sort()) {
+    if (parents.size > MAX_PARENTS_PER_CHILD) {
+      conflicts.push({
+        type: 'parents',
+        childId,
+        message:
+          `父母上限冲突：合并后「${nameOf(childId)}」将有 ${parents.size} 位父母` +
+          `（每名子女至多 ${MAX_PARENTS_PER_CHILD} 位）`,
+      });
+    }
+  }
+
+  // 第三步：祖先环路——在合并后的图上，逐边检查父母是否沿父母链可达子女
+  const mergedState = {
+    ...state,
+    parentsOf: Object.fromEntries(
+      [...parentsByChild.entries()].map(([childId, parents]) => [childId, [...parents]]),
+    ),
+  };
+  for (const e of merged) {
+    if (isReachableUp(mergedState, e.parentId, e.childId)) {
+      conflicts.push({
+        type: 'cycle',
+        parentId: e.parentId,
+        childId: e.childId,
+        message:
+          `祖先环路冲突：合并后「${nameOf(e.parentId)}」→「${nameOf(e.childId)}」` +
+          '将形成循环祖先关系',
+      });
+    }
+  }
+
+  return {
+    ...base,
+    valid: conflicts.length === 0,
+    edges: merged,
+    removedCount,
+    conflicts,
+  };
+}
+
+/**
  * BFS 沿父母链向上，返回从 start 到其全部祖先（含自身）的“全部最短路径”。
  *
  * 返回 Map: ancestorId -> {
@@ -359,6 +482,7 @@ module.exports = {
   isReachableUp,
   validateEdge,
   validateEdgeBatch,
+  planMerge,
   allShortestPathsUp,
   findCommonAncestors,
 };

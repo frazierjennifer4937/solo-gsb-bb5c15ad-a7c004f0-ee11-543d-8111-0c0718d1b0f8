@@ -24,6 +24,29 @@
         <button type="submit">添加</button>
       </form>
       <ul id="member-list" class="member-list" aria-live="polite"></ul>
+
+      <!-- 合并重复记录 -->
+      <div id="merge-panel" class="merge-panel">
+        <h3>合并重复记录</h3>
+        <p class="empty-hint">
+          同一人被重复录入时，可将其合并：被合并成员的全部父母→子女关系转移到保留成员，
+          重复关系自动去重，被合并成员随后删除。
+        </p>
+        <form id="merge-form" class="edge-form">
+          <label>
+            保留成员（姓名保留）
+            <select id="merge-keep"></select>
+          </label>
+          <span class="arrow" aria-hidden="true">⟵</span>
+          <label>
+            被合并成员（合并后删除）
+            <select id="merge-drop"></select>
+          </label>
+          <button type="submit" id="merge-preview-btn" class="primary">预览合并</button>
+          <button type="button" id="merge-submit" disabled>确认合并</button>
+        </form>
+        <div id="merge-result" class="merge-result" aria-live="polite" hidden></div>
+      </div>
     </section>
 
     <!-- 关系管理 -->

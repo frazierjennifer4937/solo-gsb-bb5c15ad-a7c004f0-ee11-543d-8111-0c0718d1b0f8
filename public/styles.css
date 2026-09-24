@@ -396,3 +396,60 @@ button.danger-link {
 .batch-status.warn { color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; }
 .batch-status.error { color: #991b1b; background: var(--warn-bg); border: 1px solid var(--warn-border); }
 .batch-status.info { color: var(--muted); background: var(--code-bg); border: 1px solid var(--border); }
+
+/* 合并重复记录 */
+.merge-panel {
+  border-top: 1px dashed var(--border);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.merge-panel h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.merge-panel .edge-form { margin-bottom: 4px; }
+
+.merge-result .batch-status {
+  display: block;
+  margin: 8px 0 0;
+}
+
+.merge-conflicts {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 0 0 4px;
+  color: var(--danger);
+  font-size: 0.86rem;
+}
+
+.merge-conflicts li { margin-bottom: 4px; }
+.merge-conflicts li::before { content: '• '; }
+
+.merge-list-title {
+  margin: 10px 0 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.merge-edge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.merge-edge-list li {
+  padding: 5px 9px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.88rem;
+}
+
+.merge-edge-list li:last-child { border-bottom: none; }
+.merge-edge-list li.merge-hit { background: var(--ok-bg); }
+.merge-edge-list .p-name, .merge-edge-list .c-name { font-weight: 600; }
