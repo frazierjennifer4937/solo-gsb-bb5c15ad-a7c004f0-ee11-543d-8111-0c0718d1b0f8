@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>家谱关系核对</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <h1>家谱关系核对</h1>
+    <p class="subtitle">
+      录入成员与「父母 → 子女」关系（每名子女至多两位父母），自动拒绝自指、重复边与祖先环路；
+      选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径。
+    </p>
+  </header>
+
+  <main class="layout">
+    <!-- 成员管理 -->
+    <section class="card" aria-labelledby="members-title">
+      <h2 id="members-title">① 成员 <span id="member-count" class="badge">0/30</span></h2>
+      <form id="member-form" class="inline-form">
+        <input type="text" id="member-name" maxlength="50" placeholder="输入姓名，如：张三" autocomplete="off" />
+        <button type="submit">添加</button>
+      </form>
+      <ul id="member-list" class="member-list" aria-live="polite"></ul>
+    </section>
+
+    <!-- 关系管理 -->
+    <section class="card wide" aria-labelledby="edges-title">
+      <h2 id="edges-title">② 父母 → 子女关系</h2>
+      <form id="edge-form" class="edge-form">
+        <label>
+          父母
+          <select id="edge-parent"></select>
+        </label>
+        <span class="arrow" aria-hidden="true">→</span>
+        <label>
+          子女
+          <select id="edge-child"></select>
+        </label>
+        <button type="submit">建立关系</button>
+        <button type="button" id="draft-add">加入批量草稿</button>
+      </form>
+
+      <!-- 批量录入草稿 -->
+      <div id="batch-panel" class="batch-panel">
+        <div class="batch-head">
+          <h3>批量录入草稿 <span id="draft-count" class="badge">0</span></h3>
+          <div class="batch-actions">
+            <button type="button" id="batch-preview" class="primary">预检整批</button>
+            <button type="button" id="batch-submit" disabled>全部合法，提交整批</button>
+            <button type="button" id="batch-clear" class="danger-link">清空草稿</button>
+          </div>
+        </div>
+        <p id="batch-status" class="batch-status" hidden></p>
+        <ol id="draft-list" class="draft-list" aria-live="polite"></ol>
+        <p class="empty-hint" id="draft-empty">
+          草稿为空。在上方选择父母与子女后点击「加入批量草稿」可累计多条；
+          点击「预检整批」查看每条错误及整批可否提交，提交前家谱被他人改动会被拒绝并要求重新预检。
+        </p>
+      </div>
+
+      <h3 class="list-title">已有关系</h3>
+      <ul id="edge-list" class="edge-list" aria-live="polite"></ul>
+    </section>
+
+    <!-- 共同祖先查询 -->
+    <section class="card wide" aria-labelledby="query-title">
+      <h2 id="query-title">③ 共同祖先核对</h2>
+      <form id="query-form" class="edge-form">
+        <label>
+          成员甲
+          <select id="query-a"></select>
+        </label>
+        <span class="arrow" aria-hidden="true">⇄</span>
+        <label>
+          成员乙
+          <select id="query-b"></select>
+        </label>
+        <button type="submit" class="primary">查询共同祖先</button>
+      </form>
+      <div id="query-result" class="result" aria-live="polite">
+        <p class="placeholder">请在上方选择两位成员后点击查询。</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
